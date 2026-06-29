@@ -10,13 +10,13 @@ You can save this file as `F1_AI_TELEMETRY_BLUEPRINT.md` on your MacBook. This d
 ## 1. Project Intent & Scope
 The objective is to build a high-performance, real-time F1 telemetry visualization and agentic strategy dashboard. The system processes massive, high-frequency structured data streams (10Hz telemetry updates) alongside unstructured, low-frequency event streams (team radio transcriptions and race control texts). 
 
-To maximize intelligence while keeping ongoing cloud compute expenses at exactly zero, the system relies entirely on localized infrastructure. 
+To maximize intelligence while minimizing cloud compute expenses, the system relies on localized infrastructure for data processing and NVIDIA NIM API for inference. 
 
-## 2. Target Production Infrastructure (The ASUS Server)
-While initial development takes place locally on a MacBook development sandbox, the code must be written with clean separation to immediately hand off to a headless ASUS Edge Server acting as the production bare-metal environment.
-* **Inference Engine:** Local Ollama / OpenClaw orchestration serving open-weights LLMs.
-* **Vector Store:** Local instance of Turbovec for embedding and querying historical context and team radio transcripts.
-* **Network Bridge:** Cloudflare Tunnels mapping local backend ports to a secure public web domain.
+## 2. Target Production Infrastructure
+While initial development takes place locally on a MacBook, the code must be written with clean separation to immediately hand off to a production environment.
+* **Backend Hosting:** Oracle Cloud Always-Free ARM VM (4 cores, 24GB RAM) — runs FastAPI + Turbovec side-by-side at zero cost.
+* **Inference Engine:** NVIDIA NIM API keys (remote inference, no local model hosting required).
+* **Vector Store:** Turbovec (self-hosted on the Oracle Cloud VM) for embedding and querying historical context and team radio transcripts.
 * **Frontend Hosting:** Vercel (Free Tier).
 
 ## 3. Core Software Stack
@@ -35,7 +35,7 @@ A fatal flaw in real-time streaming architectures is invoking an LLM directly in
 1. **The Ingestion Highway:** LangGraph constantly pulls, updates, and streams raw telemetry data to the frontend over WebSockets at 10Hz. This loop is deterministic Python code and never sleeps or blocks.
 2. **Deterministic Tripwires:** The LangGraph loop contains mathematical mathematical bounds (e.g., Z-score thresholding on pace drops, tracking throttle micro-divergences, or regex pattern matching on race control texts).
 3. **Asynchronous Spawning:** The exact millisecond a tripwire triggers, LangGraph duplicates the exact `RaceState` at that frame, and fires a non-blocking background task using `asyncio.create_task()`.
-4. **CrewAI Execution:** The background thread activates the CrewAI agents to debate the anomaly using the local LLM. The main 10Hz stream continues perfectly uninterrupted.
+4. **CrewAI Execution:** The background thread activates the CrewAI agents to debate the anomaly using NVIDIA NIM API inference. The main 10Hz stream continues perfectly uninterrupted.
 5. **The Overlay:** Once CrewAI finishes its deliberation (approx. 3-5 seconds), it pushes a custom payload containing the strategic insight over the active WebSocket, overlaying the analysis onto the dashboard.
 
 ```mermaid
@@ -47,7 +47,7 @@ graph TD
     
     C -->|Tripwire Fired| F[asyncio.create_task]
     F -->|State Snapshot| G[Isolated CrewAI Thread]
-    G -->|Local LLM Deliberation| H[Strategy Verdict Output]
+    G -->|NVIDIA NIM Deliberation| H[Strategy Verdict Output]
     H -->|Delayed Overlay Payload| D
 
 ```
@@ -56,7 +56,7 @@ graph TD
 
 ## 5. Directory Structure Blueprint
 
-To allow seamless migration from MacBook development to the ASUS production node without rewriting frontend paths, enforce this strict structural boundaries:
+To allow seamless migration from MacBook development to the Oracle Cloud VM without rewriting frontend paths, enforce this strict structural boundaries:
 
 ```text
 f1-telemetry-ai/
@@ -66,7 +66,7 @@ f1-telemetry-ai/
 │   ├── package.json
 │   ├── app/                   # Next.js app router & layouts
 │   └── components/            # Tremor visualization cards & terminal overlay
-└── backend/                   # Moves to ASUS Server
+└── backend/                   # Deploys to Oracle Cloud VM
     ├── requirements.txt
     ├── main.py                # FastAPI initialization & WebSocket management
     ├── graph.py               # LangGraph schema, state variables, & tripwire math
@@ -100,8 +100,12 @@ fastapi
 uvicorn
 langgraph
 crewai
+openai                       # SDK for NVIDIA NIM API calls
+python-dotenv               # Load API keys from .env
 
 ```
+
+**Environment Variable:** `NVIDIA_NIM_API_KEY` (add to `.env` in the backend directory)
 
 Create `backend/main.py` using `asyncio` loop architectures to demonstrate non-blocking execution:
 
