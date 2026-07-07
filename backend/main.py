@@ -18,6 +18,10 @@ app.add_middleware(
 
 HAS_NIM_KEY = bool(os.getenv("NVIDIA_NIM_API_KEY", ""))
 
+# Active replay state (per-client)
+_active_replays: dict[str, object] = {}
+
+
 async def crewai_worker(state: dict, alerts: list[dict], websocket: WebSocket):
     """Fire CrewAI deliberation in background. Non-blocking."""
     try:
@@ -42,8 +46,41 @@ async def crewai_worker(state: dict, alerts: list[dict], websocket: WebSocket):
     await websocket.send_text(json.dumps(verdict))
 
 
+async def send_telemetry_frame(websocket: WebSocket, frame: dict, state: dict,
+                                race_control_texts: list[str]):
+    """Send a telemetry frame, run tripwires, and spawn CrewAI if triggered."""
+    await websocket.send_text(json.dumps(frame))
+
+    alerts = run_tripwires(state, race_control_texts)
+    race_control_texts.clear()
+
+    if alerts:
+        print(f"[Tripwire] Lap {frame.get('lap')}: {[a['type'] for a in alerts]}")
+        asyncio.create_task(crewai_worker(state, alerts, websocket))
+
+
+# --- REST Endpoints ---
+
+@app.get("/races")
+async def list_races():
+    """List available historical races for replay."""
+    from replay import get_available_races
+    return {"races": get_available_races()}
+
+
+@app.get("/rc")
+async def race_control(text: str):
+    """Inject a race control message."""
+    from graph import check_race_control
+    alert = check_race_control(text)
+    return {"alert": alert}
+
+
+# --- WebSocket: Simulation Mode ---
+
 @app.websocket("/ws/race")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_simulate(websocket: WebSocket):
+    """Simulated 10Hz telemetry with injected anomalies (default dev mode)."""
     await websocket.accept()
     lap = 1
     tick = 0
@@ -55,38 +92,20 @@ async def websocket_endpoint(websocket: WebSocket):
             await asyncio.sleep(0.1)
             tick += 1
 
-            # Sim telemetry frame
             frame = simulate_telemetry_frame(lap, tick, tyre_type)
             frame = inject_anomaly(frame, {"lap": lap})
 
-            telemetry_payload = {
+            payload = {
                 "type": "TELEMETRY_TICK",
-                "lap": frame["lap"],
-                "speed": frame["speed"],
-                "rpm": frame["rpm"],
-                "throttle": frame["throttle"],
-                "brake": frame["brake"],
-                "tyre_wear": frame["tyre_wear"],
-                "tyre_type": frame["tyre_type"],
-                "drs": frame["drs"],
+                **frame,
             }
-            await websocket.send_text(json.dumps(telemetry_payload))
 
-            # Run tripwires
             state = {
-                "lap": lap,
-                "tick": tick,
-                "telemetry": frame,
-                "position": 3,
-                "gap_to_leader": 2.4,
-                "tyre_type": tyre_type,
+                "lap": lap, "tick": tick,
+                "telemetry": frame, "position": 3,
+                "gap_to_leader": 2.4, "tyre_type": tyre_type,
             }
-            alerts = run_tripwires(state, race_control_texts)
-            race_control_texts.clear()
-
-            if alerts:
-                print(f"[Tripwire] Lap {lap}, Tick {tick}: {[a['type'] for a in alerts]}")
-                asyncio.create_task(crewai_worker(state, alerts, websocket))
+            await send_telemetry_frame(websocket, payload, state, race_control_texts)
 
             if tick >= 100:
                 lap += 1
@@ -97,12 +116,121 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close()
 
 
-@app.get("/rc")
-async def race_control(text: str):
-    """Inject a race control message. e.g. GET /rc?text=SAFETY+CAR+DEPLOYED"""
-    from graph import check_race_control
-    alert = check_race_control(text)
-    return {"alert": alert}
+# --- WebSocket: Multi‑Driver Simulation (for overview) ---
+@app.websocket("/ws/race_multi")
+async def websocket_simulate_multi(websocket: WebSocket):
+    """Stream telemetry for several drivers at once, each with a track position."""
+    await websocket.accept()
+    lap = 1
+    tick = 0
+    tyre_type = "medium"
+    race_control_texts: list[str] = []
+    # Simulate a handful of drivers; adjust IDs as desired
+    driver_ids = [44, 77, 33, 11, 55]
+
+    try:
+        while True:
+            await asyncio.sleep(0.1)
+            tick += 1
+
+            frames = []
+            for did in driver_ids:
+                frame = simulate_telemetry_frame(lap, tick, tyre_type, driver_id=did)
+                frame = inject_anomaly(frame, {"lap": lap})
+                frames.append(frame)
+
+            # Send a single message containing an array of frames for this tick
+            payload = {
+                "type": "TELEMETRY_TICK_MULTI",
+                "tick": tick,
+                "lap": lap,
+                "frames": frames,
+            }
+            await websocket.send_text(json.dumps(payload))
+
+            # Build a representative state for tripwire checking (use first driver)
+            state = {
+                "lap": lap,
+                "tick": tick,
+                "telemetry": frames[0],
+                "position": 3,
+                "gap_to_leader": 2.4,
+                "tyre_type": tyre_type,
+            }
+            alerts = run_tripwires(state, race_control_texts)
+            race_control_texts.clear()
+            if alerts:
+                print(f"[Tripwire] Lap {lap}: {[a['type'] for a in alerts]}")
+                asyncio.create_task(crewai_worker(frames[0], alerts, websocket))
+
+            if tick >= 100:
+                lap += 1
+                tick = 0
+    except Exception as e:
+        print(f"Client disconnected: {e}")
+    finally:
+        await websocket.close()
+
+
+# --- WebSocket: Replay Mode ---
+
+@app.websocket("/ws/replay")
+async def websocket_replay(websocket: WebSocket):
+    """Replay a historical race at 10Hz using real FastF1 data.
+
+    Client sends a JSON message on connect to select the race:
+      {"race_id": "2024-monaco", "speed": 5}
+
+    - speed: replay speed multiplier (1=real-time, 5=5x faster). Default 5.
+    """
+    await websocket.accept()
+    race_control_texts: list[str] = []
+
+    try:
+        # Wait for race selection message
+        init_msg = json.loads(await websocket.receive_text())
+        race_id = init_msg.get("race_id", "2024-monaco")
+        speed = init_msg.get("speed", 5)
+
+        from replay import RaceReplay
+        replay = RaceReplay(race_id)
+        replay.load()
+
+        # Send race metadata
+        await websocket.send_text(json.dumps({
+            "type": "RACE_INFO",
+            "race": replay.race_id,
+            "total_laps": replay.data["total_laps"],
+            "driver": replay.driver_number,
+        }))
+
+        # Stream at 10Hz (or faster based on speed multiplier)
+        interval = 0.1 / speed
+
+        while True:
+            frame = replay.advance_frame()
+            if frame is None:
+                await websocket.send_text(json.dumps({
+                    "type": "RACE_COMPLETE",
+                    "message": "Replay finished.",
+                }))
+                break
+
+            state = {
+                "lap": frame.get("lap", 1),
+                "tick": replay.current_row,
+                "telemetry": frame,
+                "position": frame.get("position", 0),
+                "gap_to_leader": 0,
+                "tyre_type": frame.get("tyre_type", "medium"),
+            }
+            await send_telemetry_frame(websocket, frame, state, race_control_texts)
+            await asyncio.sleep(interval)
+
+    except Exception as e:
+        print(f"Replay client disconnected: {e}")
+    finally:
+        await websocket.close()
 
 
 if __name__ == "__main__":

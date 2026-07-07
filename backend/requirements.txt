@@ -4,3 +4,4 @@ langgraph
 crewai
 python-dotenv
 openai
+fastf1

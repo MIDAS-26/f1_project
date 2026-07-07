@@ -1,0 +1,14 @@
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  webpack: (config) => {
+    config.resolve.alias['@/*'] = './*';
+    config.resolve.alias['@app/*'] = './app/*';
+    return config;
+  },
+  experimental: {
+    turbopack: false,
+  },
+};
+
+export default nextConfig;
