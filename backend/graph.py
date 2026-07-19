@@ -3,13 +3,15 @@
 Deterministic 10Hz loop that never blocks. Tripwires trigger async CrewAI spawns.
 """
 
-from typing import TypedDict, Annotated, Optional
+from typing import TypedDict, Annotated, Optional, List
 from dataclasses import dataclass, field
 from collections import deque
 import re
 import asyncio
 import json
 
+# LangGraph imports
+from langgraph.graph import StateGraph, END
 
 # --- State ---
 
@@ -41,6 +43,11 @@ class RaceState(TypedDict):
     race_control_texts: list[str]
     last_tripwire: Optional[str]
 
+# Tripwire State for LangGraph subgraph
+class TripwireState(TypedDict):
+    telemetry: TelemetryFrame
+    race_control_texts: List[str]
+    alerts: List[dict]
 
 # --- Tripwire Detectors ---
 
@@ -117,29 +124,75 @@ def check_tyre_degradation(wear: float) -> Optional[dict]:
     return None
 
 
-def run_tripwires(state: dict, race_control_texts: list[str]) -> list[dict]:
-    """Run all tripwire detectors. Returns list of triggered alerts."""
-    t = state["telemetry"]
-    alerts = []
+# --- LangGraph Tripwire Subgraph ---
 
+def check_pace_drop_node(state: TripwireState) -> TripwireState:
+    t = state["telemetry"]
     pace = check_pace_drop(t["speed"])
     if pace:
-        alerts.append(pace)
+        new_alerts = state["alerts"] + [pace]
+        return {**state, "alerts": new_alerts}
+    return state
 
+
+def check_throttle_brake_overlap_node(state: TripwireState) -> TripwireState:
+    t = state["telemetry"]
     throt = check_throttle_divergence(t["throttle"], t["brake"])
     if throt:
-        alerts.append(throt)
+        new_alerts = state["alerts"] + [throt]
+        return {**state, "alerts": new_alerts}
+    return state
 
+
+def check_tyre_degradation_node(state: TripwireState) -> TripwireState:
+    t = state["telemetry"]
     tyre = check_tyre_degradation(t["tyre_wear"])
     if tyre:
-        alerts.append(tyre)
+        new_alerts = state["alerts"] + [tyre]
+        return {**state, "alerts": new_alerts}
+    return state
 
-    for text in race_control_texts:
+
+def check_race_control_node(state: TripwireState) -> TripwireState:
+    alerts = []
+    for text in state["race_control_texts"]:
         rc = check_race_control(text)
         if rc:
             alerts.append(rc)
+    new_alerts = state["alerts"] + alerts
+    return {**state, "alerts": new_alerts}
 
-    return alerts
+
+# Build the LangGraph tripwire checking workflow
+tripwire_workflow = StateGraph(TripwireState)
+
+# Add nodes
+tripwire_workflow.add_node("check_pace_drop", check_pace_drop_node)
+tripwire_workflow.add_node("check_throttle_brake_overlap", check_throttle_brake_overlap_node)
+tripwire_workflow.add_node("check_tyre_degradation", check_tyre_degradation_node)
+tripwire_workflow.add_node("check_race_control", check_race_control_node)
+
+# Set entry point and edges (sequential execution)
+tripwire_workflow.set_entry_point("check_pace_drop")
+tripwire_workflow.add_edge("check_pace_drop", "check_throttle_brake_overlap")
+tripwire_workflow.add_edge("check_throttle_brake_overlap", "check_tyre_degradation")
+tripwire_workflow.add_edge("check_tyre_degradation", "check_race_control")
+tripwire_workflow.add_edge("check_race_control", END)
+
+# Compile the graph
+tripwire_app = tripwire_workflow.compile()
+
+
+def run_tripwires(state: dict, race_control_texts: List[str]) -> List[dict]:
+    """Run all tripwire detectors using LangGraph. Returns list of triggered alerts."""
+    t = state["telemetry"]
+    initial_state = {
+        "telemetry": t,
+        "race_control_texts": race_control_texts,
+        "alerts": []
+    }
+    result = tripwire_app.invoke(initial_state)
+    return result["alerts"]
 
 
 # --- Telemetry Simulator (Phase 1 mock — replaced by FastF1/OpenF1 later) ---

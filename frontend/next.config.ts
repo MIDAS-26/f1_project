@@ -1,12 +1,5 @@
 import type { NextConfig } from "next";
 
-const nextConfig: NextConfig = {
-  turbo: {
-    alias: {
-      '@/*': './*',
-      '@app/*': './app/*'
-    }
-  },
-};
+const nextConfig: NextConfig = {};
 
 export default nextConfig;

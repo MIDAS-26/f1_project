@@ -4,8 +4,8 @@
 
 ▲ Next.js 16.2.9 (Turbopack)
 - Local:         http://localhost:3000
-- Network:       http://100.64.116.36:3000
-✓ Ready in 367ms
+- Network:       http://192.168.3.243:3000
+✓ Ready in 229ms
 ⚠ Warning: Next.js inferred your workspace root, but it may not be correct.
  We detected multiple lockfiles and selected the directory of /Users/midas/package-lock.json as the root directory.
  To silence this warning, set `turbopack.root` in your Next.js config, or consider removing one of the lockfiles if it's not needed.
@@ -14,18 +14,22 @@
    * /Users/midas/Documents/F1_Project/frontend/package-lock.json
 
 
-⨯ ERROR: This build is using Turbopack, with a `webpack` config and no `turbopack` config.
-   This may be a mistake.
+ GET / 200 in 207ms (next.js: 103ms, application-code: 103ms)
+✓ Compiled in 187ms
+✓ Compiled in 12ms
+✓ Compiled in 15ms
+✓ Compiled in 17ms
+✓ Compiled in 22ms
+✓ Compiled in 8ms
+ GET / 200 in 58ms (next.js: 12ms, application-code: 46ms)
+[browser] Each child in a list should have a unique "key" prop.
 
-   As of Next.js 16 Turbopack is enabled by default and
-   custom webpack configurations may need to be migrated to Turbopack.
-
-   NOTE: your `webpack` config may have been added by a configuration plugin.
-
-   To configure Turbopack, see https://nextjs.org/docs/app/api-reference/next-config-js/turbopack
-
-   TIP: Many applications work fine under Turbopack with no configuration,
-   if that is the case for you, you can silence this error by passing the
-   `--turbopack` or `--webpack` flag explicitly or simply setting an 
-   empty turbopack config in your Next config file (e.g. `turbopack: {}`).
+Check the render method of `Home`. See https://react.dev/link/warning-keys for more information. 
+✓ Compiled in 16ms
+✓ Compiled in 17ms
+✓ Compiled in 10ms
+✓ Compiled in 20ms
+✓ Compiled in 15ms
+✓ Compiled in 12ms
+✓ Compiled in 9ms
 [?25h
