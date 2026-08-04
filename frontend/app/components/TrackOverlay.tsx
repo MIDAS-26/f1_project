@@ -1,70 +1,126 @@
-import { useEffect, useState } from "react";
+"use client";
+
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRaceWebSocket } from "../hooks/useRaceWebSocket";
+import { trackFor } from "../lib/tracks";
+
+const WIDTH = 500;
+const HEIGHT = 500;
 
 export default function TrackOverlay() {
-  const { frames, selectedDriverId, setSelectedDriverId } = useRaceWebSocket();
+  const {
+    frames, selectedDriverId, setSelectedDriverId,
+    mode, trackId, trackPolyline,
+  } = useRaceWebSocket();
 
-  // Track path data (matches the SVG in public/track.svg)
-  const trackOuterPath = "M 150 100 C 150 50, 350 50, 350 100 L 350 150 C 350 180, 320 200, 280 200 C 240 200, 200 180, 200 150 L 200 120 C 200 100, 180 90, 160 90 C 140 90, 120 100, 120 120 L 120 150 C 120 180, 160 200, 200 200 C 240 200, 280 180, 280 150 L 280 120 C 280 100, 300 90, 320 90 C 340 90, 360 100, 360 120 L 360 150 C 360 180, 320 200, 280 200 C 240 200, 200 180, 200 150 Z";
-  const trackInnerPath = "M 160 110 C 160 80, 340 80, 340 110 L 340 140 C 340 150, 310 160, 260 160 C 210 160, 160 150, 160 140 L 160 110 Z";
-  const startFinishLine = { x1: 250, y1: 100, x2: 250, y2: 90 };
+  const pathRef = useRef<SVGPathElement | null>(null);
+  const [pathLength, setPathLength] = useState(0);
 
-  const width = 500;
-  const height = 500;
+  const layout = useMemo(() => trackFor(trackId), [trackId]);
+
+  // Both live-sim and replay send a real polyline traced from FastF1 GPS
+  // telemetry (see backend/track_layouts.py and backend/replay.py) — this is
+  // exact circuit geometry, not an approximation. The hand-drawn fallback
+  // shape only renders for the brief moment before that trace arrives.
+  const tracedPathD = useMemo(() => {
+    if (!trackPolyline || trackPolyline.length < 3) return null;
+    const [first, ...rest] = trackPolyline;
+    return `M ${first[0]} ${first[1]} ` + rest.map((p) => `L ${p[0]} ${p[1]}`).join(" ") + " Z";
+  }, [trackPolyline]);
+
+  const activePathD = tracedPathD ?? layout.path;
+
+  useEffect(() => {
+    if (pathRef.current) {
+      setPathLength(pathRef.current.getTotalLength());
+    }
+  }, [activePathD]);
+
+  // For live sim: cars carry track_progress (0..1); sample the path geometry to place them.
+  // For replay: cars already carry real x/y from FastF1 telemetry.
+  const positioned = frames.map((frame) => {
+    if (mode === "replay" && frame.x != null && frame.y != null) {
+      return { frame, x: frame.x, y: frame.y };
+    }
+    if (pathRef.current && pathLength > 0 && frame.track_progress != null) {
+      const pt = pathRef.current.getPointAtLength(frame.track_progress * pathLength);
+      return { frame, x: pt.x, y: pt.y };
+    }
+    return { frame, x: WIDTH / 2, y: HEIGHT / 2 };
+  });
 
   return (
-    <div style={{ position: "relative", width: width, height: height, margin: "0 auto" }}>
-      <svg width={width} height={height} style={{ display: "block" }}>
-        {/* Track outer boundary */}
+    <div style={{ position: "relative", width: WIDTH, height: HEIGHT, margin: "0 auto" }}>
+      <svg width={WIDTH} height={HEIGHT} style={{ display: "block" }}>
+        <defs>
+          <filter id="track-shadow" x="-20%" y="-20%" width="140%" height="140%">
+            <feDropShadow dx="0" dy="0" stdDeviation="3" floodColor="#000" floodOpacity="0.6" />
+          </filter>
+        </defs>
+
+        {/* Track surface (tarmac) */}
         <path
-          d={trackOuterPath}
+          ref={pathRef}
+          d={activePathD}
+          fill="none"
+          stroke="#2a2a2e"
+          strokeWidth="26"
+          strokeLinejoin="round"
+          strokeLinecap="round"
+          filter="url(#track-shadow)"
+        />
+        {/* Racing line */}
+        <path
+          d={activePathD}
           fill="none"
           stroke="#555"
-          strokeWidth="4"
+          strokeWidth="1"
+          strokeDasharray="6,6"
+          opacity="0.6"
         />
-        {/* Track surface */}
-        <path
-          d={trackInnerPath}
-          fill="#111"
-        />
-        {/* Start/Finish line */}
-        <line
-          x1={startFinishLine.x1}
-          y1={startFinishLine.y1}
-          x2={startFinishLine.x2}
-          y2={startFinishLine.y2}
-          stroke="#fff"
-          strokeWidth="2"
-        />
+
+        {/* Track name label */}
+        <text x={12} y={24} fill="#888" fontSize="13" fontWeight="600" letterSpacing="0.5">
+          {layout.name}
+        </text>
+
         {/* Driver markers */}
-        {frames.map((frame) => {
+        {positioned.map(({ frame, x, y }) => {
           const isSelected = selectedDriverId != null && frame.driver == selectedDriverId;
-          // Clamp to visible area (roughly the track bounds)
-          const x = Math.max(120, Math.min(380, frame.x ?? 250));
-          const y = Math.max(90, Math.min(410, frame.y ?? 250));
+          const color = frame.color || "#0f0";
           return (
-            <g key={frame.driver}>
+            <g
+              key={frame.driver}
+              onClick={() => setSelectedDriverId(frame.driver)}
+              style={{ cursor: "pointer" }}
+            >
+              {isSelected && (
+                <circle cx={x} cy={y} r={14} fill="none" stroke="#fff" strokeWidth={1.5} opacity={0.8}>
+                  <animate attributeName="r" values="10;16;10" dur="1.4s" repeatCount="indefinite" />
+                  <animate attributeName="opacity" values="0.8;0;0.8" dur="1.4s" repeatCount="indefinite" />
+                </circle>
+              )}
               <circle
                 cx={x}
                 cy={y}
-                r={isSelected ? 10 : 6}
-                fill={isSelected ? "#ff0" : "#0f0"}
-                stroke="#fff"
-                strokeWidth={1}
-                style={{ cursor: "pointer" }}
-                onClick={() => setSelectedDriverId(frame.driver)}
+                r={isSelected ? 9 : 6.5}
+                fill={color}
+                stroke={isSelected ? "#fff" : "#111"}
+                strokeWidth={isSelected ? 2 : 1}
               />
-              {/* Show driver number */}
               <text
                 x={x}
-                y={y - 12}
+                y={y - (isSelected ? 15 : 12)}
                 textAnchor="middle"
-                fill={isSelected ? "#000" : "#fff"}
-                fontSize="9"
-                fontWeight={isSelected ? "bold" : "normal"}
+                fill="#fff"
+                fontSize={isSelected ? 11 : 9}
+                fontWeight={isSelected ? "bold" : "600"}
+                stroke="#000"
+                strokeWidth={2.5}
+                paintOrder="stroke"
                 pointerEvents="none"
               >
-                {frame.driver}
+                {frame.code || frame.driver}
               </text>
             </g>
           );

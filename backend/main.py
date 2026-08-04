@@ -5,6 +5,8 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
 from graph import simulate_telemetry_frame, run_tripwires, inject_anomaly
+from drivers import SIM_DRIVER_NUMBERS, driver_by_number
+from track_layouts import SIM_TRACK_ID, track_id_for_race, get_track_polyline
 
 app = FastAPI()
 
@@ -113,22 +115,36 @@ async def websocket_simulate(websocket: WebSocket):
     except Exception as e:
         print(f"Client disconnected: {e}")
     finally:
-        await websocket.close()
+        try:
+            await websocket.close()
+        except RuntimeError:
+            pass
 
 
 # --- WebSocket: Multi‑Driver Simulation (for overview) ---
 @app.websocket("/ws/race_multi")
 async def websocket_simulate_multi(websocket: WebSocket):
-    """Stream telemetry for several drivers at once, each with a track position."""
+    """Stream telemetry for the full simulated grid, each with a track position."""
     await websocket.accept()
     lap = 1
     tick = 0
     tyre_type = "medium"
     race_control_texts: list[str] = []
-    # Simulate a handful of drivers; adjust IDs as desired
-    driver_ids = [44, 77, 33, 11, 55]
+    driver_ids = SIM_DRIVER_NUMBERS
 
     try:
+        # Trace the exact circuit geometry (cached after first call) and announce
+        # which circuit layout the frontend should render.
+        polyline = await asyncio.to_thread(get_track_polyline, SIM_TRACK_ID)
+        await websocket.send_text(json.dumps({
+            "type": "RACE_INFO",
+            "race": "sim",
+            "track_id": SIM_TRACK_ID,
+            "track_polyline": polyline,
+            "total_laps": None,
+            "drivers": [driver_by_number(d) for d in driver_ids],
+        }))
+
         while True:
             await asyncio.sleep(0.1)
             tick += 1
@@ -139,11 +155,18 @@ async def websocket_simulate_multi(websocket: WebSocket):
                 frame = inject_anomaly(frame, {"lap": lap})
                 frames.append(frame)
 
+            # Derive running order from track progress (lower progress = further back this lap)
+            # combined with lap count, so the leader is whoever has completed the most track.
+            ranked = sorted(frames, key=lambda f: (f["lap"], f["track_progress"]), reverse=True)
+            for rank, f in enumerate(ranked, start=1):
+                f["race_position"] = rank
+
             # Send a single message containing an array of frames for this tick
             payload = {
                 "type": "TELEMETRY_TICK_MULTI",
                 "tick": tick,
                 "lap": lap,
+                "track_id": SIM_TRACK_ID,
                 "frames": frames,
             }
             await websocket.send_text(json.dumps(payload))
@@ -169,19 +192,25 @@ async def websocket_simulate_multi(websocket: WebSocket):
     except Exception as e:
         print(f"Client disconnected: {e}")
     finally:
-        await websocket.close()
+        try:
+            await websocket.close()
+        except RuntimeError:
+            pass
 
 
 # --- WebSocket: Replay Mode ---
 
 @app.websocket("/ws/replay")
 async def websocket_replay(websocket: WebSocket):
-    """Replay a historical race at 10Hz using real FastF1 data.
+    """Replay a historical race at 10Hz using real FastF1 data for the whole grid.
 
     Client sends a JSON message on connect to select the race:
       {"race_id": "2024-monaco", "speed": 5}
 
     - speed: replay speed multiplier (1=real-time, 5=5x faster). Default 5.
+
+    Car X/Y come straight from FastF1's recorded position telemetry, so the
+    on-screen path traced by the cars is the actual circuit shape.
     """
     await websocket.accept()
     race_control_texts: list[str] = []
@@ -194,43 +223,76 @@ async def websocket_replay(websocket: WebSocket):
 
         from replay import RaceReplay
         replay = RaceReplay(race_id)
-        replay.load()
+        # Loading pulls + processes FastF1 telemetry for up to 8 drivers — keep the
+        # event loop responsive by running the blocking work in a thread.
+        await asyncio.to_thread(replay.load)
 
-        # Send race metadata
+        # Send race metadata, including the real track outline traced from telemetry
         await websocket.send_text(json.dumps({
             "type": "RACE_INFO",
             "race": replay.race_id,
-            "total_laps": replay.data["total_laps"],
-            "driver": replay.driver_number,
+            "track_id": track_id_for_race(replay.race_id),
+            "track_polyline": replay.track_polyline,
+            "total_laps": replay.total_laps,
+            "drivers": replay.driver_meta_list(),
         }))
 
         # Stream at 10Hz (or faster based on speed multiplier)
         interval = 0.1 / speed
+        tick = 0
 
         while True:
-            frame = replay.advance_frame()
-            if frame is None:
+            result = replay.advance_tick(dt_seconds=0.1)
+            if result is None:
                 await websocket.send_text(json.dumps({
                     "type": "RACE_COMPLETE",
                     "message": "Replay finished.",
                 }))
                 break
 
-            state = {
-                "lap": frame.get("lap", 1),
-                "tick": replay.current_row,
-                "telemetry": frame,
-                "position": frame.get("position", 0),
-                "gap_to_leader": 0,
-                "tyre_type": frame.get("tyre_type", "medium"),
+            tick += 1
+            frames = result["frames"]
+            lap = result["lap"]
+
+            payload = {
+                "type": "TELEMETRY_TICK_MULTI",
+                "tick": tick,
+                "lap": lap,
+                "track_id": track_id_for_race(replay.race_id),
+                "frames": frames,
             }
-            await send_telemetry_frame(websocket, frame, state, race_control_texts)
+            await websocket.send_text(json.dumps(payload))
+
+            state = {
+                "lap": lap,
+                "tick": tick,
+                "telemetry": frames[0],
+                "position": frames[0].get("grid_position", 0),
+                "gap_to_leader": 0,
+                "tyre_type": frames[0].get("tyre_type", "medium"),
+            }
+            alerts = run_tripwires(state, race_control_texts)
+            race_control_texts.clear()
+            if alerts:
+                print(f"[Tripwire][Replay] Lap {lap}: {[a['type'] for a in alerts]}")
+                asyncio.create_task(crewai_worker(frames[0], alerts, websocket))
+
             await asyncio.sleep(interval)
 
     except Exception as e:
         print(f"Replay client disconnected: {e}")
+        try:
+            await websocket.send_text(json.dumps({
+                "type": "RACE_COMPLETE",
+                "message": f"Replay error: {e}",
+            }))
+        except Exception:
+            pass
     finally:
-        await websocket.close()
+        try:
+            await websocket.close()
+        except RuntimeError:
+            pass
 
 
 if __name__ == "__main__":

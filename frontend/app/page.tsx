@@ -4,6 +4,7 @@
 import TrackOverlay from "./components/TrackOverlay";
 import RaceStats from "./components/RaceStats";
 import DriverDetail from "./components/DriverDetail";
+import TeamDriverGrid from "./components/TeamDriverGrid";
 import { useRaceWebSocket } from "./hooks/useRaceWebSocket";
 
 export default function Home() {
@@ -17,34 +18,35 @@ export default function Home() {
           F1 Telemetry AI
         </h1>
         <div className="flex items-center gap-3">
-          {mode === 'sim' && races.length === 0 ? (
-            <button disabled className="px-3 py-1 rounded text-sm font-medium bg-gray-400 text-white">
+          {mode === "sim" && races.length === 0 ? (
+            <button disabled className="px-3 py-1 rounded text-sm font-medium bg-zinc-700 text-zinc-400">
               Loading Races...
             </button>
           ) : (
             <button
               onClick={() => {
-                if (mode === 'sim') {
-                  // If we have a selected race, use it, else first race or default
-                  const raceToLoad = raceId || (races.length > 0 ? races[0].value : '2024-monaco');
+                if (mode === "sim") {
+                  const raceToLoad = raceId || (races.length > 0 ? races[0].id : "2024-monaco");
                   startReplay(raceToLoad);
                 } else {
                   startSim();
                 }
               }}
-              className={`px-3 py-1 rounded text-sm font-medium ${mode === 'sim' ? 'bg-blue-600 text-white' : 'bg-gray-600 text-white'}`}
+              className={`px-3 py-1 rounded text-sm font-medium ${
+                mode === "sim" ? "bg-blue-600 text-white" : "bg-zinc-600 text-white"
+              }`}
             >
-              {mode === 'sim' ? 'Replay Mode' : 'Live Mode'}
+              {mode === "sim" ? "Replay Mode" : "Live Mode"}
             </button>
           )}
-          {mode === 'replay' && (
+          {mode === "replay" && (
             <select
               value={raceId}
               onChange={(e) => startReplay(e.target.value)}
-              className="border rounded px-2 py-1 text-sm"
+              className="border border-zinc-700 bg-zinc-800 rounded px-2 py-1 text-sm text-zinc-100"
             >
               {races.map((race) => (
-                <option key={race.value} value={race.value}>
+                <option key={race.id} value={race.id}>
                   {race.label}
                 </option>
               ))}
@@ -53,11 +55,18 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Main content: track with overlay panels */}
-      <main className="flex-1 flex relative">
-        <TrackOverlay className="w-full h-full" />
-        <RaceStats className="absolute top-4 right-4" />
-        <DriverDetail className="absolute bottom-4 right-4" />
+      {/* Main content: track center, stats top-right, driver detail + team grid bottom-right */}
+      <main className="flex-1 relative p-6">
+        <div className="flex items-start justify-center">
+          <TrackOverlay />
+        </div>
+        <div className="absolute top-6 right-6">
+          <RaceStats />
+        </div>
+        <div className="absolute bottom-6 right-6 flex items-end gap-4">
+          <DriverDetail />
+          <TeamDriverGrid />
+        </div>
       </main>
     </div>
   );

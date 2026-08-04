@@ -25,11 +25,14 @@ class TelemetryFrame(TypedDict):
     tyre_wear: float    # 0.0 - 1.0
     tyre_type: str
     drs: bool
-    # driver identification and track position for overlay
+    # driver identification
     driver: int
-    x: float            # pixels from left of track image
-    y: float            # pixels from top of track image
-    position: float     # 0.0 to 1.0, normalized lap progress (lower is ahead)
+    code: str            # 3-letter driver code, e.g. "VER"
+    name: str             # full driver name
+    team: str
+    color: str            # hex team color for track marker
+    track_progress: float # 0.0 to 1.0, normalized progress around the lap (for track placement)
+    race_position: int    # 1-based race rank (1 = leader)
 
 class RaceState(TypedDict):
     lap: int
@@ -198,11 +201,26 @@ def run_tripwires(state: dict, race_control_texts: List[str]) -> List[dict]:
 # --- Telemetry Simulator (Phase 1 mock — replaced by FastF1/OpenF1 later) ---
 
 import random
+from drivers import driver_by_number, SIM_DRIVER_NUMBERS
+
+# Stagger drivers around the lap so the grid isn't all bunched at the same point,
+# and give each a slightly different pace so the running order changes over time.
+_GRID_OFFSETS = {
+    num: idx / len(SIM_DRIVER_NUMBERS) for idx, num in enumerate(SIM_DRIVER_NUMBERS)
+}
+_PACE_FACTORS = {
+    num: 1.0 + (idx - len(SIM_DRIVER_NUMBERS) / 2) * 0.004
+    for idx, num in enumerate(SIM_DRIVER_NUMBERS)
+}
+
 
 def simulate_telemetry_frame(lap: int, tick: int, tyre_type: str, driver_id: int = 1) -> TelemetryFrame:
     """Generate a realistic-ish telemetry frame for development."""
-    # Simulate a cornering cycle every ~100 ticks
-    phase = (tick % 100) / 100  # 0..1 through the sector
+    pace = _PACE_FACTORS.get(driver_id, 1.0)
+    offset = _GRID_OFFSETS.get(driver_id, 0.0)
+
+    # Simulate a cornering cycle every ~100 ticks, offset per-driver so the grid spreads out
+    phase = (((tick * pace) % 100) / 100 + offset) % 1.0
 
     if phase < 0.3:
         speed = 180 + random.uniform(-5, 5)
@@ -217,15 +235,7 @@ def simulate_telemetry_frame(lap: int, tick: int, tyre_type: str, driver_id: int
         throttle = random.uniform(0.4, 0.7)
         brake = random.uniform(0.1, 0.3)
 
-    # Simple circular track overlay (center at 250,250, radius varies by driver)
-    import math
-    cx, cy = 250, 250
-    base_radius = 120
-    # spread drivers out by radius and phase
-    radius = base_radius + ((driver_id - 1) % 5) * 15  # 0-60 extra
-    angle = 2 * math.pi * phase + ((driver_id - 1) % 5) * (math.pi / 6)  # offset
-    x = cx + radius * math.cos(angle)
-    y = cy + radius * math.sin(angle)
+    info = driver_by_number(driver_id)
 
     return TelemetryFrame(
         lap=lap,
@@ -234,13 +244,16 @@ def simulate_telemetry_frame(lap: int, tick: int, tyre_type: str, driver_id: int
         rpm=round(10500 + (speed / 370) * 4500 + random.uniform(-50, 50)),
         throttle=round(throttle, 2),
         brake=round(brake, 2),
-        tyre_wear=round(0.01 * tick + random.uniform(0, 0.02), 3),
+        tyre_wear=round(min(1.0, 0.01 * tick + random.uniform(0, 0.02)), 3),
         tyre_type=tyre_type,
         drs=tick > 30 and tick < 70,
         driver=driver_id,
-        x=round(x, 1),
-        y=round(y, 1),
-        position=phase,  # Normalized lap progress (0.0 = start/finish, 1.0 = end of lap)
+        code=info["code"],
+        name=info["name"],
+        team=info["team"],
+        color=info["color"],
+        track_progress=phase,  # 0.0 = start/finish, 1.0 = end of lap
+        race_position=0,  # filled in by caller once all drivers for the tick are known
     )
 
 
