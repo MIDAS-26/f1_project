@@ -41,6 +41,15 @@ RACE_TRACK_MAP = {
     "2024-spa": "spa",
     "2024-interlagos": "interlagos",
     "2024-abudhabi": "abudhabi",
+    "2023-monaco": "monaco",
+    "2023-silverstone": "silverstone",
+    "2023-spa": "spa",
+    "2023-interlagos": "interlagos",
+    "2023-abudhabi": "abudhabi",
+    "2022-monaco": "monaco",
+    "2022-silverstone": "silverstone",
+    "2022-spa": "spa",
+    "2022-abudhabi": "abudhabi",
 }
 
 SIM_TRACK_ID = "silverstone"

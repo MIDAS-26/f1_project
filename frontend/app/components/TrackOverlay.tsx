@@ -50,8 +50,8 @@ export default function TrackOverlay() {
   });
 
   return (
-    <div style={{ position: "relative", width: WIDTH, height: HEIGHT, margin: "0 auto" }}>
-      <svg width={WIDTH} height={HEIGHT} style={{ display: "block" }}>
+    <div className="bg-zinc-900/70 backdrop-blur-sm border border-zinc-800 rounded-xl h-full flex items-center justify-center p-2 min-h-0">
+      <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="w-full h-full max-w-full max-h-full" style={{ display: "block" }}>
         <defs>
           <filter id="track-shadow" x="-20%" y="-20%" width="140%" height="140%">
             <feDropShadow dx="0" dy="0" stdDeviation="3" floodColor="#000" floodOpacity="0.6" />
@@ -80,9 +80,14 @@ export default function TrackOverlay() {
         />
 
         {/* Track name label */}
-        <text x={12} y={24} fill="#888" fontSize="13" fontWeight="600" letterSpacing="0.5">
+        <text x={16} y={28} fill="#a1a1aa" fontSize="14" fontWeight="700" letterSpacing="0.3">
           {layout.name}
         </text>
+        {!selectedDriverId && frames.length > 0 && (
+          <text x={16} y={HEIGHT - 16} fill="#71717a" fontSize="11">
+            Click a car to inspect that driver
+          </text>
+        )}
 
         {/* Driver markers */}
         {positioned.map(({ frame, x, y }) => {

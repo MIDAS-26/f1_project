@@ -3,12 +3,31 @@
 import { useRaceWebSocket } from "../hooks/useRaceWebSocket";
 
 export default function RaceStats() {
-  const { frames, connected, mode, raceId, raceMeta } = useRaceWebSocket();
+  const { frames, connected, phase, mode, raceMeta } = useRaceWebSocket();
+
+  if (phase === "loading_race") {
+    return (
+      <div className="flex items-center gap-2 text-sm text-zinc-400">
+        <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+        Loading real telemetry from FastF1… this can take up to a minute the first time.
+      </div>
+    );
+  }
+
+  if (phase === "error") {
+    return (
+      <div className="flex items-center gap-2 text-sm text-red-400">
+        <span className="w-2 h-2 rounded-full bg-red-400" />
+        Connection error — check the backend is running.
+      </div>
+    );
+  }
 
   if (!connected || frames.length === 0) {
     return (
-      <div className="p-2 text-zinc-400">
-        Waiting for data...
+      <div className="flex items-center gap-2 text-sm text-zinc-400">
+        <span className="w-2 h-2 rounded-full bg-zinc-600 animate-pulse" />
+        Connecting…
       </div>
     );
   }
@@ -23,45 +42,37 @@ export default function RaceStats() {
   }, frames[0]);
 
   return (
-    <div className="bg-zinc-800/50 backdrop-blur-sm p-4 rounded-lg border border-zinc-700 text-zinc-200 text-sm min-w-[220px]">
-      <div className="flex items-center justify-between mb-2">
-        <div className="font-medium">Race Overview</div>
-        <div className="text-xs text-zinc-400 text-right">
-          {mode === "replay"
-            ? raceMeta?.race
-              ? raceMeta.race
-              : raceId
-            : "Live Simulation"}
-        </div>
+    <div className="flex items-center gap-6 text-sm">
+      <div className="flex items-center gap-1.5">
+        <span className={`w-2 h-2 rounded-full ${mode === "replay" ? "bg-red-400" : "bg-emerald-400"}`} />
+        <span className="text-zinc-300 font-medium">
+          {mode === "replay" ? "Replay" : "Live Simulation"}
+        </span>
       </div>
-      <div className="space-y-2">
-        <div className="flex justify-between">
-          <span>Lap:</span>
-          <span className="font-mono">
-            {lap}
-            {raceMeta?.total_laps ? ` / ${raceMeta.total_laps}` : ""}
-          </span>
-        </div>
-        <div className="flex justify-between">
-          <span>Drivers:</span>
-          <span className="font-mono">{driverCount}</span>
-        </div>
-        <div className="flex justify-between">
-          <span>Leader:</span>
-          <span className="font-mono flex items-center gap-1">
-            <span
-              className="w-2 h-2 rounded-full inline-block"
-              style={{ backgroundColor: leader.color || "#888" }}
-            />
-            {leader.code || leader.driver}
-          </span>
-        </div>
-        <div className="flex justify-between">
-          <span>Fastest:</span>
-          <span className="font-mono">
-            {fastest.speed.toFixed(0)} km/h ({fastest.code || fastest.driver})
-          </span>
-        </div>
+
+      <div className="text-zinc-500">
+        Lap <span className="font-mono text-zinc-200">{lap}</span>
+        {raceMeta?.total_laps ? <span className="text-zinc-600">/{raceMeta.total_laps}</span> : null}
+      </div>
+
+      <div className="text-zinc-500">
+        <span className="text-zinc-600">Drivers</span>{" "}
+        <span className="font-mono text-zinc-200">{driverCount}</span>
+      </div>
+
+      <div className="text-zinc-500 flex items-center gap-1.5">
+        <span className="text-zinc-600">Leader</span>
+        <span
+          className="w-1.5 h-1.5 rounded-full inline-block"
+          style={{ backgroundColor: leader.color || "#888" }}
+        />
+        <span className="font-mono text-zinc-200">{leader.code || leader.driver}</span>
+      </div>
+
+      <div className="text-zinc-500">
+        <span className="text-zinc-600">Fastest</span>{" "}
+        <span className="font-mono text-zinc-200">{fastest.speed.toFixed(0)} km/h</span>{" "}
+        <span className="text-zinc-600">({fastest.code || fastest.driver})</span>
       </div>
     </div>
   );

@@ -46,18 +46,21 @@ class RaceState(TypedDict):
     race_control_texts: list[str]
     last_tripwire: Optional[str]
 
-# Tripwire State for LangGraph subgraph
+# Tripwire State for LangGraph subgraph.
+# `speed_window` carries a per-driver, per-connection deque (see
+# TripwireEngine below) through the graph so pace-drop z-scores are never
+# mixed across different clients or different drivers on the same client —
+# a single module-level deque would corrupt every other driver/session's
+# rolling window as soon as more than one frame source was live.
 class TripwireState(TypedDict):
     telemetry: TelemetryFrame
     race_control_texts: List[str]
     alerts: List[dict]
+    speed_window: "deque[float]"
 
 # --- Tripwire Detectors ---
 
-# Rolling Z-score for pace anomalies
-SPEED_WINDOW = 30  # 3 seconds at 10Hz
-
-speed_window = deque(maxlen=SPEED_WINDOW)
+SPEED_WINDOW_SIZE = 30  # 3 seconds at 10Hz
 
 # Race control regex patterns
 RACE_CONTROL_PATTERNS = {
@@ -70,10 +73,14 @@ RACE_CONTROL_PATTERNS = {
 }
 
 
-def check_pace_drop(speed: float) -> Optional[dict]:
-    """Z-score thresholding: flag if current speed is >2 std below rolling mean."""
+def check_pace_drop(speed: float, speed_window: "deque[float]") -> Optional[dict]:
+    """Z-score thresholding: flag if current speed is >2 std below rolling mean.
+
+    `speed_window` must be a deque scoped to a single driver/connection —
+    the caller owns its lifetime (see TripwireEngine).
+    """
     speed_window.append(speed)
-    if len(speed_window) < SPEED_WINDOW:
+    if len(speed_window) < speed_window.maxlen:
         return None
 
     mean = sum(speed_window) / len(speed_window)
@@ -131,7 +138,7 @@ def check_tyre_degradation(wear: float) -> Optional[dict]:
 
 def check_pace_drop_node(state: TripwireState) -> TripwireState:
     t = state["telemetry"]
-    pace = check_pace_drop(t["speed"])
+    pace = check_pace_drop(t["speed"], state["speed_window"])
     if pace:
         new_alerts = state["alerts"] + [pace]
         return {**state, "alerts": new_alerts}
@@ -186,16 +193,49 @@ tripwire_workflow.add_edge("check_race_control", END)
 tripwire_app = tripwire_workflow.compile()
 
 
-def run_tripwires(state: dict, race_control_texts: List[str]) -> List[dict]:
-    """Run all tripwire detectors using LangGraph. Returns list of triggered alerts."""
+def run_tripwires(state: dict, race_control_texts: List[str],
+                   speed_window: "deque[float]") -> List[dict]:
+    """Run all tripwire detectors using LangGraph for a single driver's frame.
+
+    `speed_window` must belong to that specific driver within that specific
+    connection (see TripwireEngine) so pace-drop stats never mix drivers or
+    sessions.
+    """
     t = state["telemetry"]
     initial_state = {
         "telemetry": t,
         "race_control_texts": race_control_texts,
-        "alerts": []
+        "alerts": [],
+        "speed_window": speed_window,
     }
     result = tripwire_app.invoke(initial_state)
     return result["alerts"]
+
+
+class TripwireEngine:
+    """Owns per-driver rolling state for one WebSocket connection.
+
+    Each connected client (a live-sim viewer or a replay session) gets its
+    own TripwireEngine, and within it every driver number gets its own
+    speed-history deque — so two clients, or two drivers in the same multi-
+    car feed, never corrupt each other's pace-drop baseline the way a single
+    module-level deque did previously.
+    """
+
+    def __init__(self):
+        self._speed_windows: dict[int, "deque[float]"] = {}
+
+    def _window_for(self, driver: int) -> "deque[float]":
+        w = self._speed_windows.get(driver)
+        if w is None:
+            w = deque(maxlen=SPEED_WINDOW_SIZE)
+            self._speed_windows[driver] = w
+        return w
+
+    def check(self, state: dict, race_control_texts: List[str]) -> List[dict]:
+        """Run tripwires for one driver's frame, keyed by state['telemetry']['driver']."""
+        driver = state["telemetry"].get("driver", 0)
+        return run_tripwires(state, race_control_texts, self._window_for(driver))
 
 
 # --- Telemetry Simulator (Phase 1 mock — replaced by FastF1/OpenF1 later) ---

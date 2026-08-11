@@ -35,18 +35,43 @@ CACHE_DIR = os.getenv("F1_CACHE_DIR", "/tmp/f1_cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 fastf1.Cache.enable_cache(CACHE_DIR)
 
-# Pre-selected memorable races for replay
+# Pre-selected memorable races for replay, grouped implicitly by year.
+# Restricted to circuits with traced geometry in track_layouts.py so the
+# track shown during replay is always the real circuit outline, never the
+# generic fallback shape. Add a circuit here only after adding a matching
+# entry to track_layouts.TRACK_REFERENCE_SESSION / RACE_TRACK_MAP.
 AVAILABLE_RACES = [
+    # 2024
     {"id": "2024-monaco", "year": 2024, "gp": "Monaco", "session": "R",
-     "label": "2024 Monaco GP"},
+     "label": "Monaco Grand Prix", "circuit": "Circuit de Monaco", "country": "Monaco"},
     {"id": "2024-silverstone", "year": 2024, "gp": "Great Britain", "session": "R",
-     "label": "2024 British GP"},
+     "label": "British Grand Prix", "circuit": "Silverstone Circuit", "country": "United Kingdom"},
     {"id": "2024-spa", "year": 2024, "gp": "Belgium", "session": "R",
-     "label": "2024 Belgian GP"},
+     "label": "Belgian Grand Prix", "circuit": "Circuit de Spa-Francorchamps", "country": "Belgium"},
     {"id": "2024-interlagos", "year": 2024, "gp": "Sao Paulo", "session": "R",
-     "label": "2024 Sao Paulo GP"},
+     "label": "São Paulo Grand Prix", "circuit": "Autódromo José Carlos Pace", "country": "Brazil"},
     {"id": "2024-abudhabi", "year": 2024, "gp": "Abu Dhabi", "session": "R",
-     "label": "2024 Abu Dhabi GP"},
+     "label": "Abu Dhabi Grand Prix", "circuit": "Yas Marina Circuit", "country": "United Arab Emirates"},
+    # 2023
+    {"id": "2023-monaco", "year": 2023, "gp": "Monaco", "session": "R",
+     "label": "Monaco Grand Prix", "circuit": "Circuit de Monaco", "country": "Monaco"},
+    {"id": "2023-silverstone", "year": 2023, "gp": "Great Britain", "session": "R",
+     "label": "British Grand Prix", "circuit": "Silverstone Circuit", "country": "United Kingdom"},
+    {"id": "2023-spa", "year": 2023, "gp": "Belgium", "session": "R",
+     "label": "Belgian Grand Prix", "circuit": "Circuit de Spa-Francorchamps", "country": "Belgium"},
+    {"id": "2023-interlagos", "year": 2023, "gp": "Sao Paulo", "session": "R",
+     "label": "São Paulo Grand Prix", "circuit": "Autódromo José Carlos Pace", "country": "Brazil"},
+    {"id": "2023-abudhabi", "year": 2023, "gp": "Abu Dhabi", "session": "R",
+     "label": "Abu Dhabi Grand Prix", "circuit": "Yas Marina Circuit", "country": "United Arab Emirates"},
+    # 2022
+    {"id": "2022-monaco", "year": 2022, "gp": "Monaco", "session": "R",
+     "label": "Monaco Grand Prix", "circuit": "Circuit de Monaco", "country": "Monaco"},
+    {"id": "2022-silverstone", "year": 2022, "gp": "Great Britain", "session": "R",
+     "label": "British Grand Prix", "circuit": "Silverstone Circuit", "country": "United Kingdom"},
+    {"id": "2022-spa", "year": 2022, "gp": "Belgium", "session": "R",
+     "label": "Belgian Grand Prix", "circuit": "Circuit de Spa-Francorchamps", "country": "Belgium"},
+    {"id": "2022-abudhabi", "year": 2022, "gp": "Abu Dhabi", "session": "R",
+     "label": "Abu Dhabi Grand Prix", "circuit": "Yas Marina Circuit", "country": "United Arab Emirates"},
 ]
 
 # How many cars to replay at once — full grid for a realistic race

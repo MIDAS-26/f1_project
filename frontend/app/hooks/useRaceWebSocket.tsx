@@ -34,10 +34,46 @@ interface TelemetryFrame {
   y?: number;
 }
 
-interface AIOverlay {
+export interface TripwireAlertMsg {
+  type: "TRIPWIRE_ALERT";
+  alert_id: number;
+  lap: number;
+  tick: number;
+  driver: number;
+  code?: string;
+  name?: string;
+  team?: string;
+  color?: string;
+  alerts: { type: string; [k: string]: any }[];
+  will_analyze: boolean;
+}
+
+export interface AIOverlay {
   type: "AI_STRATEGY_OVERLAY";
   content: string;
+  alerts: { type: string; [k: string]: any }[];
+  lap: number;
+  tick: number;
+  driver: number;
+  source: "crewai" | "fallback";
+  alert_id?: number;
   _id?: number;
+}
+
+// One entry per tripwire detection, filled in as its verdict arrives.
+export interface AnalysisEntry {
+  alertId: number;
+  lap: number;
+  tick: number;
+  driver: number;
+  code?: string;
+  name?: string;
+  team?: string;
+  color?: string;
+  alertTypes: string[];
+  status: "analyzing" | "answered" | "skipped";
+  verdict?: AIOverlay;
+  receivedAt: number;
 }
 
 interface RaceInfo {
@@ -63,19 +99,44 @@ interface TelemetryMultiFrame {
   frames: TelemetryFrame[];
 }
 
-type RaceMessage = TelemetryFrame | TelemetryMultiFrame | AIOverlay | RaceInfo | RaceComplete;
+type RaceMessage =
+  | TelemetryFrame
+  | TelemetryMultiFrame
+  | AIOverlay
+  | TripwireAlertMsg
+  | RaceInfo
+  | RaceComplete;
 
 export interface RaceOption {
   id: string;
+  year: number;
   label: string;
+  circuit?: string;
+  country?: string;
+}
+
+export interface AgentStatus {
+  langgraph: { engine: string; nodes: string[] };
+  crewai: {
+    has_llm_key: boolean;
+    model: string;
+    provider: string;
+    agents: string[];
+    process: string;
+    quota: { exhausted: boolean; resets_in_seconds: number } | null;
+  };
 }
 
 type Mode = "sim" | "replay";
+type ConnectionPhase = "idle" | "connecting" | "loading_race" | "live" | "complete" | "error";
 
 interface RaceWebSocketState {
   frames: TelemetryFrame[];
   overlays: AIOverlay[];
+  analysisLog: AnalysisEntry[];
   connected: boolean;
+  phase: ConnectionPhase;
+  errorMessage: string | null;
   mode: Mode;
   raceId: string;
   races: RaceOption[];
@@ -88,12 +149,20 @@ interface RaceWebSocketState {
   trackId: string;
   trackPolyline: [number, number][] | null;
   driverRoster: DriverMeta[];
+  agentStatus: AgentStatus | null;
 }
+
+// Kept generous enough to feed a dedicated analytics page (Sankey, stats)
+// across a full replay session, not just the live sidebar feed.
+const MAX_ANALYSIS_LOG = 500;
 
 function useRaceWebSocketInternal(): RaceWebSocketState {
   const [frames, setFrames] = useState<TelemetryFrame[]>([]); // array of frames for latest tick
   const [overlays, setOverlays] = useState<AIOverlay[]>([]);
+  const [analysisLog, setAnalysisLog] = useState<AnalysisEntry[]>([]);
   const [connected, setConnected] = useState(false);
+  const [phase, setPhase] = useState<ConnectionPhase>("idle");
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("sim");
   const [raceId, setRaceId] = useState<string>("");
   const [raceMeta, setRaceMeta] = useState<RaceInfo | null>(null);
@@ -103,20 +172,39 @@ function useRaceWebSocketInternal(): RaceWebSocketState {
   const [trackId, setTrackId] = useState<string>("silverstone");
   const [trackPolyline, setTrackPolyline] = useState<[number, number][] | null>(null);
   const [driverRoster, setDriverRoster] = useState<DriverMeta[]>([]);
+  const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
-  // Fetch available races on mount
+  // Fetch available races + agent status on mount
   useEffect(() => {
     fetch("http://localhost:8000/races")
       .then((r) => r.json())
       .then((data) => {
         if (data.races) {
           setRaces(
-            data.races.map((r: any) => ({ id: r.id, label: r.label }))
+            data.races.map((r: any) => ({
+              id: r.id,
+              year: r.year,
+              label: r.label,
+              circuit: r.circuit,
+              country: r.country,
+            }))
           );
         }
       })
       .catch(() => {});
+
+    const fetchAgentStatus = () => {
+      fetch("http://localhost:8000/agent_status")
+        .then((r) => r.json())
+        .then((data) => setAgentStatus(data))
+        .catch(() => {});
+    };
+    fetchAgentStatus();
+    // Poll periodically so the daily-quota circuit breaker state (which can
+    // trip or reset mid-session) is reflected live, not just at page load.
+    const interval = setInterval(fetchAgentStatus, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   const connect = useCallback((m: Mode, rId?: string) => {
@@ -130,6 +218,8 @@ function useRaceWebSocketInternal(): RaceWebSocketState {
       url = "ws://localhost:8000/ws/race_multi";
     }
 
+    setPhase(m === "replay" ? "loading_race" : "connecting");
+    setErrorMessage(null);
     const ws = new WebSocket(url);
 
     ws.onopen = () => {
@@ -142,7 +232,14 @@ function useRaceWebSocketInternal(): RaceWebSocketState {
         ws.send(JSON.stringify({ race_id: rId, speed: 10 }));
       }
     };
-    ws.onclose = () => setConnected(false);
+    ws.onclose = () => {
+      setConnected(false);
+      setPhase((p) => (p === "complete" || p === "error" ? p : "idle"));
+    };
+    ws.onerror = () => {
+      setPhase("error");
+      setErrorMessage("Connection to backend failed. Is the server running on :8000?");
+    };
 
     ws.onmessage = (event) => {
       const data = event.data;
@@ -156,15 +253,42 @@ function useRaceWebSocketInternal(): RaceWebSocketState {
       if (msg.type === "TELEMETRY_TICK") {
         // Single frame (backwards compatibility)
         setFrames([msg]);
+        setPhase("live");
       } else if (msg.type === "TELEMETRY_TICK_MULTI") {
         setFrames(msg.frames);
         if (msg.track_id) setTrackId(msg.track_id);
+        setPhase("live");
+      } else if (msg.type === "TRIPWIRE_ALERT") {
+        const entry: AnalysisEntry = {
+          alertId: msg.alert_id,
+          lap: msg.lap,
+          tick: msg.tick,
+          driver: msg.driver,
+          code: msg.code,
+          name: msg.name,
+          team: msg.team,
+          color: msg.color,
+          alertTypes: msg.alerts.map((a) => a.type),
+          status: msg.will_analyze ? "analyzing" : "skipped",
+          receivedAt: Date.now(),
+        };
+        setAnalysisLog((prev) => [entry, ...prev].slice(0, MAX_ANALYSIS_LOG));
       } else if (msg.type === "AI_STRATEGY_OVERLAY") {
         const id = Date.now();
         setOverlays((prev) => [...prev, { ...msg, _id: id }]);
         setTimeout(() => {
           setOverlays((prev) => prev.filter((o) => o._id !== id));
         }, 8000);
+
+        if (msg.alert_id != null) {
+          setAnalysisLog((prev) =>
+            prev.map((e) =>
+              e.alertId === msg.alert_id
+                ? { ...e, status: "answered", verdict: msg }
+                : e
+            )
+          );
+        }
       } else if (msg.type === "RACE_INFO") {
         setRaceMeta(msg);
         if (msg.track_id) setTrackId(msg.track_id);
@@ -172,6 +296,12 @@ function useRaceWebSocketInternal(): RaceWebSocketState {
         if (msg.drivers) setDriverRoster(msg.drivers);
       } else if (msg.type === "RACE_COMPLETE") {
         setComplete(true);
+        if (msg.message && msg.message.toLowerCase().includes("error")) {
+          setPhase("error");
+          setErrorMessage(msg.message);
+        } else {
+          setPhase("complete");
+        }
       }
     };
 
@@ -189,6 +319,7 @@ function useRaceWebSocketInternal(): RaceWebSocketState {
     setRaceId(rId);
     setFrames([]);
     setOverlays([]);
+    setAnalysisLog([]);
     setTrackPolyline(null);
     setSelectedDriverId(null);
     connect("replay", rId);
@@ -201,16 +332,17 @@ function useRaceWebSocketInternal(): RaceWebSocketState {
     setComplete(false);
     setFrames([]);
     setOverlays([]);
+    setAnalysisLog([]);
     setSelectedDriverId(null);
     setTrackPolyline(null);
     connect("sim");
   }, [connect]);
 
   return {
-    frames, overlays, connected, mode, raceId,
+    frames, overlays, analysisLog, connected, phase, errorMessage, mode, raceId,
     races, raceMeta, complete, startReplay, startSim,
     selectedDriverId, setSelectedDriverId,
-    trackId, trackPolyline, driverRoster,
+    trackId, trackPolyline, driverRoster, agentStatus,
   };
 }
 

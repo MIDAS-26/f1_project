@@ -17,30 +17,30 @@ export default function TeamDriverGrid() {
     return Array.from(groups.entries());
   }, [driverRoster]);
 
-  if (driverRoster.length === 0) {
-    return (
-      <div className="bg-zinc-800/50 backdrop-blur-sm p-3 rounded-lg border border-zinc-700 text-zinc-400 text-sm w-72">
-        Waiting for grid...
-      </div>
-    );
-  }
-
   return (
-    <div className="bg-zinc-800/50 backdrop-blur-sm p-3 rounded-lg border border-zinc-700 text-zinc-200 text-sm w-72 max-h-[380px] overflow-y-auto">
-      <div className="font-medium mb-2 text-xs uppercase tracking-wide text-zinc-400">
-        Grid by Team
+    <div className="bg-zinc-900/70 backdrop-blur-sm border border-zinc-800 rounded-xl flex flex-col h-full min-h-0">
+      <div className="px-4 py-3 border-b border-zinc-800 shrink-0">
+        <div className="font-semibold text-sm text-zinc-100">Grid</div>
+        <div className="text-xs text-zinc-500">Grouped by team · click to inspect</div>
       </div>
-      <div className="space-y-3">
+
+      <div className="flex-1 min-h-0 overflow-y-auto p-2">
+        {driverRoster.length === 0 && (
+          <div className="px-3 py-6 text-center text-zinc-500 text-sm">Waiting for grid…</div>
+        )}
+
         {byTeam.map(([team, drivers]) => (
-          <div key={team}>
-            <div className="flex items-center gap-2 mb-1">
+          <div key={team} className="mb-2">
+            <div className="flex items-center gap-2 px-2 py-1">
               <span
                 className="w-2 h-2 rounded-full shrink-0"
                 style={{ backgroundColor: drivers[0]?.color || "#888" }}
               />
-              <span className="text-xs font-semibold text-zinc-300 truncate">{team}</span>
+              <span className="text-[11px] font-semibold text-zinc-400 truncate uppercase tracking-wide">
+                {team}
+              </span>
             </div>
-            <div className="grid grid-cols-2 gap-1 pl-4">
+            <div className="grid grid-cols-2 gap-1">
               {drivers.map((d) => {
                 const isSelected = selectedDriverId != null && d.driver == selectedDriverId;
                 const live = frames.find((f) => f.driver === d.driver);
@@ -48,21 +48,21 @@ export default function TeamDriverGrid() {
                   <button
                     key={d.driver}
                     onClick={() => setSelectedDriverId(d.driver)}
-                    className={`flex flex-col items-start px-2 py-1 rounded transition-colors text-left ${
+                    className={`flex flex-col items-start px-2 py-1.5 rounded-lg transition-colors text-left ${
                       isSelected
                         ? "bg-zinc-700 ring-1 ring-white/40"
-                        : "hover:bg-zinc-700/50"
+                        : "hover:bg-zinc-800"
                     }`}
                   >
                     <div className="flex items-center gap-1.5 w-full">
-                      <span className="font-mono text-xs">{d.code}</span>
+                      <span className="font-mono text-xs font-medium text-zinc-100">{d.code}</span>
                       {live?.race_position && (
-                        <span className="text-[10px] text-zinc-500 ml-auto">
+                        <span className="text-[10px] text-zinc-500 ml-auto font-mono">
                           P{live.race_position}
                         </span>
                       )}
                     </div>
-                    <span className="truncate text-[11px] text-zinc-400 w-full">
+                    <span className="truncate text-[11px] text-zinc-500 w-full">
                       {d.name}
                     </span>
                   </button>

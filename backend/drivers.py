@@ -38,6 +38,13 @@ DRIVER_ROSTER = [
     # Haas
     {"driver": 20, "code": "MAG", "name": "Kevin Magnussen",   "team": "Haas",            "color": "#B6BABD"},
     {"driver": 27, "code": "HUL", "name": "Nico Hülkenberg",   "team": "Haas",            "color": "#B6BABD"},
+    # Mid-2024 substitute drivers — appear in real replay sessions (e.g. Sao
+    # Paulo, Abu Dhabi) even though they aren't part of the regular-season
+    # lineup above, so they need roster entries too or replay mode falls
+    # back to an ugly "Driver 30 / Unknown team" placeholder for them.
+    {"driver": 30, "code": "LAW", "name": "Liam Lawson",       "team": "RB",              "color": "#5E8FAA"},
+    {"driver": 50, "code": "BEA", "name": "Oliver Bearman",    "team": "Haas",            "color": "#B6BABD"},
+    {"driver": 43, "code": "COL", "name": "Franco Colapinto",  "team": "Williams",        "color": "#37BEDD"},
 ]
 
 DRIVER_BY_NUMBER = {d["driver"]: d for d in DRIVER_ROSTER}
