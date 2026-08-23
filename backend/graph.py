@@ -57,10 +57,16 @@ class TripwireState(TypedDict):
     race_control_texts: List[str]
     alerts: List[dict]
     speed_window: "deque[float]"
+    pace_drop_streak: List[int]  # single-element mutable box: [consecutive-tick count]
 
 # --- Tripwire Detectors ---
 
-SPEED_WINDOW_SIZE = 30  # 3 seconds at 10Hz
+# Simulated speed cycles between straight (~310 km/h) and corner (~180 km/h)
+# roughly every 100 ticks (10s). A window shorter than that cycle treats a
+# routine corner as a statistical anomaly against its own recent straight-
+# line speeds — 60 samples (6s) covers most of one cycle so the baseline
+# reflects a full lap's variation, not just the tail end of one phase.
+SPEED_WINDOW_SIZE = 60
 
 # Race control regex patterns
 RACE_CONTROL_PATTERNS = {
@@ -73,11 +79,31 @@ RACE_CONTROL_PATTERNS = {
 }
 
 
-def check_pace_drop(speed: float, speed_window: "deque[float]") -> Optional[dict]:
-    """Z-score thresholding: flag if current speed is >2 std below rolling mean.
+# Consecutive below-threshold ticks required before PACE_DROP actually
+# fires. A bare z-score threshold alone isn't enough: the simulated speed
+# profile dips to the same corner-minimum every lap, and even at z < -3.0
+# that recurring minimum reliably crosses the line for a tick or two on
+# nearly every cycle (verified empirically — every driver retriggered like
+# clockwork, ~13s apart, forever). Real random jitter breaks a momentary dip
+# back above threshold almost immediately, so requiring 3 consecutive ticks
+# (0.3s sustained) filters out routine cornering while still catching a
+# genuinely sustained pace loss (lockup, off-track excursion, mechanical
+# issue) within a third of a second.
+PACE_DROP_DEBOUNCE_TICKS = 3
 
-    `speed_window` must be a deque scoped to a single driver/connection —
-    the caller owns its lifetime (see TripwireEngine).
+
+def check_pace_drop(speed: float, speed_window: "deque[float]", streak: List[int]) -> Optional[dict]:
+    """Z-score thresholding: flag if current speed is far below the rolling mean,
+    sustained for PACE_DROP_DEBOUNCE_TICKS consecutive ticks.
+
+    `speed_window` and `streak` must both be scoped to a single driver/
+    connection — the caller owns their lifetime (see TripwireEngine).
+
+    Threshold is -3.0, not the textbook -2.0: with a speed profile that
+    swings ~130 km/h between straights and corners every lap, z < -2.0
+    flags a large share of *routine* corner entries as anomalies (verified
+    empirically — fires on ~9% of ticks). -3.0 isolates genuinely unusual
+    drops rather than the car braking for a corner like it does every lap.
     """
     speed_window.append(speed)
     if len(speed_window) < speed_window.maxlen:
@@ -87,23 +113,39 @@ def check_pace_drop(speed: float, speed_window: "deque[float]") -> Optional[dict
     variance = sum((s - mean) ** 2 for s in speed_window) / len(speed_window)
     std = variance ** 0.5
     if std < 1:
+        streak[0] = 0
         return None
 
     z = (speed - mean) / std
-    if z < -2.0:
+    if z < -3.0:
+        streak[0] += 1
+    else:
+        streak[0] = 0
+
+    if streak[0] >= PACE_DROP_DEBOUNCE_TICKS:
+        streak[0] = 0  # require a fresh sustained dip before firing again
         return {
             "type": "PACE_DROP",
             "z_score": round(z, 2),
             "current_speed": speed,
             "rolling_mean": round(mean, 1),
-            "severity": "high" if z < -3.0 else "medium",
+            "severity": "high" if z < -4.0 else "medium",
         }
     return None
 
 
 def check_throttle_divergence(throttle: float, brake: float) -> Optional[dict]:
-    """Flag simultaneous throttle+brake (possible mechanical issue or driver error)."""
-    if throttle > 0.3 and brake > 0.3:
+    """Flag simultaneous throttle+brake (possible mechanical issue or driver error).
+
+    Threshold is 0.5/0.5, not 0.3/0.3: normal trail-braking on corner entry
+    legitimately has some throttle overlap with brake in the 0.1-0.4 range
+    (verified against the simulated braking-zone profile) — 0.3 caught that
+    routine overlap on most braking-zone ticks for every driver, every lap.
+    0.5/0.5 requires a much heavier simultaneous application than any normal
+    braking technique produces, isolating genuine driver-error/mechanical
+    cases instead of ordinary trail braking.
+    """
+    if throttle > 0.5 and brake > 0.5:
         return {
             "type": "THROTTLE_BRAKE_OVERLAP",
             "throttle": throttle,
@@ -138,7 +180,7 @@ def check_tyre_degradation(wear: float) -> Optional[dict]:
 
 def check_pace_drop_node(state: TripwireState) -> TripwireState:
     t = state["telemetry"]
-    pace = check_pace_drop(t["speed"], state["speed_window"])
+    pace = check_pace_drop(t["speed"], state["speed_window"], state["pace_drop_streak"])
     if pace:
         new_alerts = state["alerts"] + [pace]
         return {**state, "alerts": new_alerts}
@@ -194,12 +236,12 @@ tripwire_app = tripwire_workflow.compile()
 
 
 def run_tripwires(state: dict, race_control_texts: List[str],
-                   speed_window: "deque[float]") -> List[dict]:
+                   speed_window: "deque[float]", pace_drop_streak: List[int]) -> List[dict]:
     """Run all tripwire detectors using LangGraph for a single driver's frame.
 
-    `speed_window` must belong to that specific driver within that specific
-    connection (see TripwireEngine) so pace-drop stats never mix drivers or
-    sessions.
+    `speed_window` and `pace_drop_streak` must both belong to that specific
+    driver within that specific connection (see TripwireEngine) so pace-drop
+    stats never mix drivers or sessions.
     """
     t = state["telemetry"]
     initial_state = {
@@ -207,6 +249,7 @@ def run_tripwires(state: dict, race_control_texts: List[str],
         "race_control_texts": race_control_texts,
         "alerts": [],
         "speed_window": speed_window,
+        "pace_drop_streak": pace_drop_streak,
     }
     result = tripwire_app.invoke(initial_state)
     return result["alerts"]
@@ -224,6 +267,7 @@ class TripwireEngine:
 
     def __init__(self):
         self._speed_windows: dict[int, "deque[float]"] = {}
+        self._pace_drop_streaks: dict[int, List[int]] = {}
 
     def _window_for(self, driver: int) -> "deque[float]":
         w = self._speed_windows.get(driver)
@@ -232,10 +276,19 @@ class TripwireEngine:
             self._speed_windows[driver] = w
         return w
 
+    def _streak_for(self, driver: int) -> List[int]:
+        s = self._pace_drop_streaks.get(driver)
+        if s is None:
+            s = [0]
+            self._pace_drop_streaks[driver] = s
+        return s
+
     def check(self, state: dict, race_control_texts: List[str]) -> List[dict]:
         """Run tripwires for one driver's frame, keyed by state['telemetry']['driver']."""
         driver = state["telemetry"].get("driver", 0)
-        return run_tripwires(state, race_control_texts, self._window_for(driver))
+        return run_tripwires(
+            state, race_control_texts, self._window_for(driver), self._streak_for(driver)
+        )
 
 
 # --- Telemetry Simulator (Phase 1 mock — replaced by FastF1/OpenF1 later) ---
@@ -284,7 +337,15 @@ def simulate_telemetry_frame(lap: int, tick: int, tyre_type: str, driver_id: int
         rpm=round(10500 + (speed / 370) * 4500 + random.uniform(-50, 50)),
         throttle=round(throttle, 2),
         brake=round(brake, 2),
-        tyre_wear=round(min(1.0, 0.01 * tick + random.uniform(0, 0.02)), 3),
+        # Wear accumulates across the *stint* (laps), not within a single
+        # lap: the old formula was `0.01 * tick`, and since `tick` resets to
+        # 0 every lap while climbing to ~100 by the lap's end, every driver
+        # spent the second half of every single lap pinned above the 0.8
+        # "critical" threshold — it modeled a full tyre change every lap,
+        # not gradual degradation. ~28 laps to reach critical wear is a
+        # plausible one-stint window; tick contributes only a small within-
+        # lap ripple so wear still ticks up smoothly rather than jumping.
+        tyre_wear=round(min(1.0, 0.035 * (lap - 1) + 0.00035 * tick + random.uniform(0, 0.01)), 3),
         tyre_type=tyre_type,
         drs=tick > 30 and tick < 70,
         driver=driver_id,
@@ -300,11 +361,36 @@ def simulate_telemetry_frame(lap: int, tick: int, tyre_type: str, driver_id: int
 # --- Anomaly Injection (for testing) ---
 
 def inject_anomaly(frame: TelemetryFrame, state: dict) -> TelemetryFrame:
-    """Occasionally inject anomalies so tripwires fire during development."""
+    """Occasionally inject a genuine anomaly so the tripwire pipeline can be
+    exercised without waiting for real conditions (e.g. ~24 laps for tyre
+    wear) to occur naturally.
+
+    Was dead code before: `lap == lap % 5 == 0` chains to `(lap == lap % 5)
+    and (lap % 5 == 0)`, which — since laps start at 1 — requires lap == 0
+    and so never fired. Also the injected throttle/brake of exactly 0.5/0.5
+    no longer clears the tightened `> 0.5` overlap threshold, and a single
+    injected tick can't clear PACE_DROP's 3-consecutive-tick debounce.
+    Fixed to fire every 5th lap across ticks 50-52 (3 consecutive ticks) and
+    inject values that clearly exceed both current thresholds.
+    """
     t = frame["tick"]
     lap = frame["lap"]
-    if lap == lap % 5 == 0 and t == 50:
-        frame["speed"] = frame["speed"] * 0.6
-        frame["throttle"] = 0.5
-        frame["brake"] = 0.5
+    if lap % 5 == 0 and 50 <= t <= 55:
+        # Sustaining a moderate dip (e.g. 60 km/h) for many ticks doesn't
+        # work here: each identical low sample pulls the rolling window's
+        # own mean *and* inflates its std (the window becomes bimodal, half
+        # normal-pace half anomaly), and z-score actually drifts back
+        # *toward* zero the longer the anomaly persists against its own
+        # increasingly-skewed baseline (verified empirically). A brief,
+        # sharp spike well outside anything the window has seen avoids that
+        # self-dilution — but whether any single tick clears -3.0 still
+        # depends on exactly where in the straight/corner cycle the window
+        # sits when the spike lands (verified: 3 ticks can land right on
+        # the -3.0/-2.98 edge). Injecting across 6 ticks instead of the
+        # minimum 3 gives PACE_DROP_DEBOUNCE_TICKS' 3-consecutive-tick
+        # requirement enough room to find 3 in a row regardless of cycle
+        # phase, without relying on hitting an exact tick window.
+        frame["speed"] = 20.0
+        frame["throttle"] = 0.7
+        frame["brake"] = 0.7
     return frame

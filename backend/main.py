@@ -105,9 +105,18 @@ class TripwireDispatcher:
     incident, and flooding the analysis feed with skip noise that makes it
     useless for judging output quality. The cooldown treats repeat hits on
     the same driver within the window as the same incident.
+
+    30s (not the original 8s): the simulated speed profile cycles every
+    ~10s, and even a tightened PACE_DROP threshold (z < -3.0) still crosses
+    on most cycles — an 8s cooldown was barely longer than one cycle, so
+    every driver kept re-triggering roughly every cycle indefinitely
+    (empirically: ~13s between repeats per driver, all 20 drivers, for the
+    whole session). 30s spans several cycles, so a trigger has to actually
+    stand out from a few laps' worth of driving, not just from the one
+    immediately before it.
     """
 
-    def __init__(self, cooldown_seconds: float = 8.0):
+    def __init__(self, cooldown_seconds: float = 30.0):
         self.engine = TripwireEngine()
         self._cooldown_seconds = cooldown_seconds
         self._last_alert_at: dict[int, float] = {}
